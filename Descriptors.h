@@ -469,6 +469,24 @@ static void MyWarpPerspective(Mat& prev_src, Mat& src, Mat& dst, Mat& M0, int fl
 	}
 }
 
+namespace {
+	cv::Mat windowedMatchingMask(const std::vector<cv::KeyPoint>& keypoints1,
+				 const std::vector<cv::KeyPoint>& keypoints2,
+				 float maxDeltaX, float maxDeltaY) {
+		if (keypoints1.empty() || keypoints2.empty())
+			return cv::Mat();
+		int n1 = (int)keypoints1.size(), n2 = (int)keypoints2.size();
+		cv::Mat mask(n1, n2, CV_8UC1);
+		for (int i = 0; i < n1; i++) {
+			for (int j = 0; j < n2; j++) {
+				cv::Point2f diff = keypoints2[j].pt - keypoints1[i].pt;
+				mask.at<uchar>(i, j) = std::abs(diff.x) < maxDeltaX && std::abs(diff.y) < maxDeltaY;
+			}
+		}
+		return mask;
+	}
+}
+
 void ComputeMatch(const std::vector<KeyPoint>& prev_kpts, const std::vector<KeyPoint>& kpts,
 				  const Mat& prev_desc, const Mat& desc, std::vector<Point2f>& prev_pts, std::vector<Point2f>& pts)
 {

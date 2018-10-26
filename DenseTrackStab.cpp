@@ -6,6 +6,7 @@
 #include <time.h>
 
 using namespace cv;
+using namespace cv::xfeatures2d;
 
 int show_track = 0; // set show_track = 1, if you want to visualize the trajectories
 
@@ -47,8 +48,8 @@ int main(int argc, char** argv)
 	if(show_track == 1)
 		namedWindow("DenseTrackStab", 0);
 
-	SurfFeatureDetector detector_surf(200);
-	SurfDescriptorExtractor extractor_surf(true, true);
+	Ptr<SURF> detector_surf = SURF::create(200);
+	Ptr<SURF> extractor_surf = SURF::create(true, true);
 
 	std::vector<Point2f> prev_pts_flow, pts_flow;
 	std::vector<Point2f> prev_pts_surf, pts_surf;
@@ -126,8 +127,8 @@ int main(int argc, char** argv)
 			if(bb_file)
 				InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
 
-			detector_surf.detect(prev_grey, prev_kpts_surf, human_mask);
-			extractor_surf.compute(prev_grey, prev_kpts_surf, prev_desc_surf);
+			detector_surf->detect(prev_grey, prev_kpts_surf, human_mask);
+			extractor_surf->compute(prev_grey, prev_kpts_surf, prev_desc_surf);
 
 			frame_num++;
 			continue;
@@ -140,8 +141,8 @@ int main(int argc, char** argv)
 		// match surf features
 		if(bb_file)
 			InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
-		detector_surf.detect(grey, kpts_surf, human_mask);
-		extractor_surf.compute(grey, kpts_surf, desc_surf);
+		detector_surf->detect(grey, kpts_surf, human_mask);
+		extractor_surf->compute(grey, kpts_surf, desc_surf);
 		ComputeMatch(prev_kpts_surf, kpts_surf, prev_desc_surf, desc_surf, prev_pts_surf, pts_surf);
 
 		// compute optical flow for all scales once
