@@ -65,8 +65,8 @@ namespace {
 				return Py_BuildValue("(ifffffffffNNNNNNN)",
 						frame_num, mean_x, mean_y, var_x, var_y, length,
 						scale, x_pos, y_pos, t_pos,
-						toPython(coords), toPython(traj), toPython(displacement), toPython(hog),
-						toPython(hof), toPython(mbhX), toPython(mbhY));
+						toPython(coords), toPython(traj), toPython(hog),
+						toPython(hof), toPython(mbhX), toPython(mbhY), toPython(displacement));
 #endif
 			return Py_BuildValue("(ifffffffffNNNNNN)",
 					frame_num, mean_x, mean_y, var_x, var_y, length,
@@ -286,7 +286,6 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 			}
 #endif
 
-			frame_num++;
 			continue;
 		}
 
@@ -486,8 +485,13 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 
 			DenseSample(grey_pyr[iScale], points, quality, min_distance);
 			// save the new feature points
-			for(unsigned int i = 0; i < points.size(); i++)
+			for(unsigned int i = 0; i < points.size(); i++) {
 				tracks.push_back(Track(points[i], trackInfo, hogInfo, hofInfo, mbhInfo));
+#ifdef USE_SURF
+				if (adjust_camera)
+					tracks.back().disp.resize(trackInfo.length);
+#endif
+			}
 		}
 
 		init_counter = 0;
@@ -555,15 +559,16 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "t_pos", "f", 1));
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "coords", "f", track_length + 1, 2));
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "trajectory", "f", track_length, 2));
-#ifdef USE_SURF
-	if (adjust_camera) {
-		PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "displacement", "f", track_length, 2));
-	}
-#endif
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "hog", "f", 8 * cell_size));
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "hof", "f", 9 * cell_size));
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mbh_x", "f", 8 * cell_size));
 	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mbh_y", "f", 8 * cell_size));
+#ifdef USE_SURF
+	if (adjust_camera) {
+		// Put displacement at the end to keep the other positions unchanged.
+		PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "displacement", "f", track_length, 2));
+	}
+#endif
 	PyArray_Descr* descr;
 	PyArray_DescrConverter(dtype, &descr);
 	Py_DECREF(dtype);
@@ -603,8 +608,7 @@ int main(int argc, char** argv)
 		return -1;
 	}
 	std::vector<Mat> frames;
-	int frame_num = 0;
-	while (frame_num <= end_frame) {
+	for (int frame_num = 0; frame_num <= end_frame; frame_num++) {
 		Mat frame;
 		// get a new frame
 		capture >> frame;
@@ -615,7 +619,6 @@ int main(int argc, char** argv)
 			cvtColor(frame, gray, CV_BGR2GRAY);
 			frames.push_back(gray);
 		}
-		frame_num++;
 	}
 	if (frames.empty()) {
 		fprintf(stderr, "Could not initialize capturing..\n");
