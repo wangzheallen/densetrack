@@ -5,27 +5,166 @@
 
 #include <time.h>
 
+#ifdef USE_PYTHON
+#define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
+#include <numpy/arrayobject.h>
+#endif
+
 using namespace cv;
+#ifdef USE_SURF
 using namespace cv::xfeatures2d;
+#endif
 
 int show_track = 0; // set show_track = 1, if you want to visualize the trajectories
 
-int main(int argc, char** argv)
-{
-	VideoCapture capture;
-	char* video = argv[1];
-	int flag = arg_parse(argc, argv);
-	capture.open(video);
+#ifdef USE_PYTHON
+namespace {
+	class ValidTrack
+	{
+	public:
+		std::vector<Mat>::size_type frame_num;
+		float mean_x;
+		float mean_y;
+		float var_x;
+		float var_y;
+		float length;
+		float scale;
+		float x_pos;
+		float y_pos;
+		float t_pos;
+		std::vector<Point2f> coords;
+		std::vector<Point2f> traj;
+#ifdef USE_SURF
+		std::vector<Point2f> displacement;
+#endif
+		std::vector<float> hog;
+		std::vector<float> hof;
+		std::vector<float> mbhX;
+		std::vector<float> mbhY;
 
-	if(!capture.isOpened()) {
-		fprintf(stderr, "Could not initialize capturing..\n");
-		return -1;
+		ValidTrack() :
+			frame_num(0), mean_x(0), mean_y(0), var_x(0), var_y(0),
+			length(0), scale(0), x_pos(0), y_pos(0), t_pos(0) {
+		}
+
+		ValidTrack(std::vector<Mat>::size_type frame_num_,
+			float mean_x_, float mean_y_, float var_x_, float var_y_,
+			float length_, float scale_, float x_pos_, float y_pos_, float t_pos_,
+			const std::vector<Point2f>& coords_, const std::vector<Point2f>& traj_,
+			const std::vector<float>& hog_, const std::vector<float>& hof_,
+			const std::vector<float>& mbhX_, const std::vector<float>& mbhY_) :
+			frame_num(frame_num_), mean_x(mean_x_), mean_y(mean_y_),
+			var_x(var_x_), var_y(var_y_), length(length_), scale(scale_),
+			x_pos(x_pos_), y_pos(y_pos_), t_pos(t_pos_), coords(coords_), traj(traj_),
+			hog(hog_), hof(hof_), mbhX(mbhX_), mbhY(mbhY_) {
+		}
+
+		PyObject* toPython() {
+#ifdef USE_SURF
+			if (!displacement.empty())
+				return Py_BuildValue("(ifffffffffNNNNNNN)",
+						frame_num, mean_x, mean_y, var_x, var_y, length,
+						scale, x_pos, y_pos, t_pos,
+						toPython(coords), toPython(traj), toPython(displacement), toPython(hog),
+						toPython(hof), toPython(mbhX), toPython(mbhY));
+#endif
+			return Py_BuildValue("(ifffffffffNNNNNN)",
+					frame_num, mean_x, mean_y, var_x, var_y, length,
+					scale, x_pos, y_pos, t_pos,
+					toPython(coords), toPython(traj), toPython(hog),
+					toPython(hof), toPython(mbhX), toPython(mbhY));
+		}
+
+	private:
+		PyObject* toPython(const std::vector<float>& values) {
+			// This could be sped up more by creating a Numpy array here.
+			PyObject* py_list = PyList_New(values.size());
+			for (size_t i = 0; i < values.size(); i++)
+				PyList_SetItem(py_list, i, Py_BuildValue("f", values[i]));
+			return py_list;
+		}
+
+		PyObject* toPython(const std::vector<Point2f>& values) {
+			PyObject* py_list = PyList_New(values.size());
+			for (size_t i = 0; i < values.size(); i++)
+				PyList_SetItem(py_list, i, Py_BuildValue("[ff]", values[i].x, values[i].y));
+			return py_list;
+		}
+	};
+
+	class GILState {
+		PyGILState_STATE gstate;
+	public:
+		GILState() {
+			// See http://stackoverflow.com/questions/35774011/segment-fault-when-creating-pylist-new-in-python-c-extention
+			// for why we need line of code below
+			// Note that this is only needed for ctypes.CDLL and not for ctypes.PyDLL but does no harm for the latter.
+			gstate = PyGILState_Ensure();
+		}
+		~GILState() {
+			PyGILState_Release(gstate);
+		}
+	};
+
+	int createDirectory(const char* path) {
+		const char* end = strrchr(path, '/');
+		if (end == NULL || end == path)
+			return 0;
+		size_t len = end - path;
+		char dir_path[300];
+		if (len + 1 > sizeof(dir_path)) {
+			errno = ENAMETOOLONG;
+			return -1;
+		}
+		memcpy(dir_path, path, len);
+		dir_path[len] = '\0';
+		for (char* p = dir_path + 1; *p; p++) {
+			if (*p == '/') {
+				*p = '\0';
+				if (mkdir(dir_path, S_IRWXU) < 0 && errno != EEXIST)
+					return -1;
+				*p = '/';
+			}
+		}
+		if (mkdir(dir_path, S_IRWXU) < 0 && errno != EEXIST)
+			return -1;
+		return 0;
+	}
+}
+#endif
+
+extern "C"
+#ifdef USE_PYTHON
+PyObject*
+#else
+void
+#endif
+densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int track_length, 
+		int min_distance, int patch_size, int nxy_cell, int nt_cell, 
+		int scale_num, int init_gap, int poly_n, double poly_sigma,
+		const char* image_pattern, bool adjust_camera) {
+#ifdef USE_PYTHON
+	GILState gstate;
+	if (PyArray_API == NULL) {
+		import_array();
 	}
 
-#ifdef USE_SURF
-	bool adjust_camera = true;
+	std::vector<ValidTrack> valid_tracks;
+
+	// Note that this opens a block closed by Py_END_ALLOW_THREADS.
+	// https://docs.python.org/3/c-api/init.html#releasing-the-gil-from-extension-code
+	// Variables may need to be declared outside that block.
+	Py_BEGIN_ALLOW_THREADS
 #endif
-	int frame_num = 0;
+
+	// create a vector of cv::mat to hold frames of video
+	std::vector<Mat> video;
+	video.reserve(len);
+	for (size_t k = 0; k < len; k++) {
+		Mat frame = Mat(rows, cols, CV_8UC1, (frames + k*rows*cols));
+		video.push_back(frame);
+	}
+
 	TrackInfo trackInfo;
 	DescInfo hogInfo, hofInfo, mbhInfo;
 
@@ -43,10 +182,9 @@ int main(int argc, char** argv)
 		LoadBoundBox(bb_file, bb_list);
 		assert(bb_list.size() == seqInfo.length);
 	}
+#else
+	adjust_camera = false;
 #endif
-
-	if(flag)
-		seqInfo.length = end_frame - start_frame + 1;
 
 //	fprintf(stderr, "video size, length: %d, width: %d, height: %d\n", seqInfo.length, seqInfo.width, seqInfo.height);
 
@@ -60,14 +198,11 @@ int main(int argc, char** argv)
 		detector_surf = SURF::create(200);
 		extractor_surf = SURF::create(true, true);
 	}
-#endif
 
 	std::vector<Point2f> prev_pts_flow, pts_flow;
 	std::vector<Point2f> prev_pts_surf, pts_surf;
 	std::vector<Point2f> prev_pts_all, pts_all;
-
 	std::vector<KeyPoint> prev_kpts_surf, kpts_surf;
-#ifdef USE_SURF
 	Mat prev_desc_surf, desc_surf, human_mask;
 #endif
 
@@ -81,21 +216,16 @@ int main(int argc, char** argv)
 
 	std::vector<std::list<Track> > xyScaleTracks;
 	int init_counter = 0; // indicate when to detect new feature points
-	while(true) {
-		Mat frame;
-
-		// get a new frame
-		capture >> frame;
-		if(frame.empty())
+#ifdef USE_PYTHON
+	bool first_image = true;
+#endif
+	for (std::vector<Mat>::size_type frame_num = 0; frame_num != video.size(); frame_num++) {
+		Mat frame = video[frame_num];
+		if (frame.empty())
 			break;
-
-		if(frame_num < start_frame || frame_num > end_frame) {
-			frame_num++;
-			continue;
-		}
-
-		if(frame_num == start_frame) {
-			image.create(frame.size(), CV_8UC3);
+		if(frame_num == 0) {
+			if (show_track == 1 || image_pattern != NULL)
+				image.create(frame.size(), CV_8UC3);
 			grey.create(frame.size(), CV_8UC1);
 			prev_grey.create(frame.size(), CV_8UC1);
 
@@ -117,8 +247,9 @@ int main(int argc, char** argv)
 
 			xyScaleTracks.resize(scale_num);
 
-			frame.copyTo(image);
-			cvtColor(image, prev_grey, CV_BGR2GRAY);
+			frame.copyTo(prev_grey);
+			if (show_track == 1 || image_pattern != NULL)
+				cvtColor(frame, image, CV_GRAY2BGR);
 
 			for(int iScale = 0; iScale < scale_num; iScale++) {
 				if(iScale == 0)
@@ -142,7 +273,7 @@ int main(int argc, char** argv)
 			}
 
 			// compute polynomial expansion
-			my::FarnebackPolyExpPyr(prev_grey, prev_poly_pyr, fscales, 7, 1.5);
+			my::FarnebackPolyExpPyr(prev_grey, prev_poly_pyr, fscales, poly_n, poly_sigma);
 
 #ifdef USE_SURF
 			if (adjust_camera) {
@@ -160,8 +291,9 @@ int main(int argc, char** argv)
 		}
 
 		init_counter++;
-		frame.copyTo(image);
-		cvtColor(image, grey, CV_BGR2GRAY);
+		frame.copyTo(grey);
+		if (show_track == 1 || image_pattern != NULL)
+			cvtColor(frame, image, CV_GRAY2BGR);
 
 #ifdef USE_SURF
 		if (adjust_camera) {
@@ -175,7 +307,7 @@ int main(int argc, char** argv)
 #endif
 
 		// compute optical flow for all scales once
-		my::FarnebackPolyExpPyr(grey, poly_pyr, fscales, 7, 1.5);
+		my::FarnebackPolyExpPyr(grey, poly_pyr, fscales, poly_n, poly_sigma);
 		my::calcOpticalFlowFarneback(prev_poly_pyr, poly_pyr, flow_pyr, 10, 2);
 
 #ifdef USE_SURF
@@ -196,7 +328,7 @@ int main(int argc, char** argv)
 			MyWarpPerspective(prev_grey, grey, grey_warp, H_inv); // warp the second frame
 
 			// compute optical flow for all scales once
-			my::FarnebackPolyExpPyr(grey_warp, poly_warp_pyr, fscales, 7, 1.5);
+			my::FarnebackPolyExpPyr(grey_warp, poly_warp_pyr, fscales, poly_n, poly_sigma);
 			my::calcOpticalFlowFarneback(prev_poly_pyr, poly_warp_pyr, flow_warp_pyr, 10, 2);
 		}
 #endif
@@ -260,7 +392,7 @@ int main(int argc, char** argv)
 				iTrack->addPoint(point);
 
 				// draw the trajectories at the first scale
-				if(show_track == 1 && iScale == 0)
+				if((show_track == 1 || image_pattern != NULL) && iScale == 0)
 					DrawTrack(iTrack->point, iTrack->index, fscales[iScale], image);
 
 				// if the trajectory achieves the maximal length
@@ -278,20 +410,46 @@ int main(int argc, char** argv)
 					}
 #endif
 	
+					// Create a copy of the track coordinates because they are normalized by IsValid() call below.
+					std::vector<Point2f> trajectory_copy(trackInfo.length+1);
+					for(int i = 0; i <= trackInfo.length; ++i)
+						trajectory_copy[i] = iTrack->point[i] * fscales[iScale];
+
 					float mean_x(0), mean_y(0), var_x(0), var_y(0), length(0);
 					if(IsValid(trajectory, mean_x, mean_y, var_x, var_y, length)
 #ifdef USE_SURF
 						 && (!adjust_camera || IsCameraMotion(displacement))
 #endif
 						 ) {
-						// output the trajectory
-						printf("%d\t%f\t%f\t%f\t%f\t%f\t%f\t", frame_num, mean_x, mean_y, var_x, var_y, length, fscales[iScale]);
-
 						// for spatio-temporal pyramid
-						printf("%f\t", std::min<float>(std::max<float>(mean_x/float(seqInfo.width), 0), 0.999));
-						printf("%f\t", std::min<float>(std::max<float>(mean_y/float(seqInfo.height), 0), 0.999));
-						printf("%f\t", std::min<float>(std::max<float>((frame_num - trackInfo.length/2.0 - start_frame)/float(seqInfo.length), 0), 0.999));
-					
+						float x_pos = std::min<float>(std::max<float>(mean_x/float(seqInfo.width), 0), 0.999);
+						float y_pos = std::min<float>(std::max<float>(mean_y/float(seqInfo.height), 0), 0.999);
+						float t_pos = std::min<float>(std::max<float>((frame_num - trackInfo.length/2.0)/float(seqInfo.length), 0), 0.999);
+#ifdef USE_PYTHON
+						std::vector<float> hog;
+						std::vector<float> hof;
+						std::vector<float> mbhX;
+						std::vector<float> mbhY;
+						PrintDesc(iTrack->hog, hogInfo, trackInfo, hog);
+						PrintDesc(iTrack->hof, hofInfo, trackInfo, hof);
+						PrintDesc(iTrack->mbhX, mbhInfo, trackInfo, mbhX);
+						PrintDesc(iTrack->mbhY, mbhInfo, trackInfo, mbhY);
+						valid_tracks.push_back(ValidTrack(frame_num, mean_x, mean_y,
+										var_x, var_y, length, fscales[iScale],
+										x_pos, y_pos, t_pos, trajectory_copy, trajectory,
+										hog, hof, mbhX, mbhY));
+#ifdef USE_SURF
+						if (!displacement.empty())
+							// The vector is normalized. Make a copy if this isn't desired.
+							valid_tracks.back().displacement = displacement;
+#endif
+#else
+#ifndef USE_GPROF
+						// output the trajectory
+						printf("%lu\t%f\t%f\t%f\t%f\t%f\t%f\t", frame_num, mean_x, mean_y, var_x, var_y, length, fscales[iScale]);
+						printf("%f\t", x_pos);
+						printf("%f\t", y_pos);
+						printf("%f\t", t_pos);
 #ifdef USE_SURF
 						if (adjust_camera) {
 							// output the trajectory
@@ -299,12 +457,13 @@ int main(int argc, char** argv)
 								printf("%f\t%f\t", displacement[i].x, displacement[i].y);
 						}
 #endif
-		
 						PrintDesc(iTrack->hog, hogInfo, trackInfo);
 						PrintDesc(iTrack->hof, hofInfo, trackInfo);
 						PrintDesc(iTrack->mbhX, mbhInfo, trackInfo);
 						PrintDesc(iTrack->mbhY, mbhInfo, trackInfo);
 						printf("\n");
+#endif
+#endif
 					}
 
 					iTrack = tracks.erase(iTrack);
@@ -345,17 +504,145 @@ int main(int argc, char** argv)
 		}
 #endif
 
-		frame_num++;
-
 		if( show_track == 1 ) {
 			imshow( "DenseTrackStab", image);
 			int c = cvWaitKey(3);
 			if((char)c == 27) break;
 		}
+#ifdef USE_PYTHON
+		if (image_pattern != NULL) {
+			char path[300];
+			snprintf(path, sizeof(path), image_pattern, frame_num);
+			if (first_image) {
+				first_image = false;
+				if (createDirectory(path) < 0) {
+					Py_BLOCK_THREADS
+					return PyErr_SetFromErrno(PyExc_OSError);
+				}
+			}
+			try {
+				cv::imwrite(path, image);
+			}
+			catch (const cv::Exception& ex) {
+				Py_BLOCK_THREADS
+				PyErr_SetString(PyExc_RuntimeError, ex.what());
+				Py_RETURN_NONE;
+			}
+		}
+#endif
 	}
 
 	if( show_track == 1 )
 		destroyWindow("DenseTrackStab");
 
+#ifdef USE_PYTHON
+	Py_END_ALLOW_THREADS
+
+	int cell_size = nxy_cell * nxy_cell * nt_cell;
+	// PyList_Append increases the ref count (unlike PyList_SetItem)
+	// https://stackoverflow.com/questions/3512414/does-this-pylist-appendlist-py-buildvalue-leak
+	PyObject* dtype = PyList_New(adjust_camera ? 17 : 16);
+	int idx = 0;
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "frame_num", "i", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mean_x", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mean_y", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "var_x", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "var_y", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "length", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "scale", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "x_pos", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "y_pos", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "t_pos", "f", 1));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "coords", "f", track_length + 1, 2));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "trajectory", "f", track_length, 2));
+#ifdef USE_SURF
+	if (adjust_camera) {
+		PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, (i, i))", "displacement", "f", track_length, 2));
+	}
+#endif
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "hog", "f", 8 * cell_size));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "hof", "f", 9 * cell_size));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mbh_x", "f", 8 * cell_size));
+	PyList_SetItem(dtype, idx++, Py_BuildValue("(s, s, i)", "mbh_y", "f", 8 * cell_size));
+	PyArray_Descr* descr;
+	PyArray_DescrConverter(dtype, &descr);
+	Py_DECREF(dtype);
+	npy_intp dims[1];
+	dims[0] = valid_tracks.size();
+	PyArrayObject* py_tracks =
+		(PyArrayObject*) PyArray_NewFromDescr(&PyArray_Type, descr, 1, dims, NULL, NULL, 0, NULL);
+	if (!py_tracks) {
+		fprintf(stderr, "Error creating Numpy array\n");
+		Py_RETURN_NONE;
+	}
+
+	npy_intp stride = PyArray_STRIDES(py_tracks)[0];
+	char* bytes = PyArray_BYTES(py_tracks);
+	for (size_t i = 0; i < valid_tracks.size(); i++) {
+		PyObject* item = valid_tracks[i].toPython();
+		PyArray_SETITEM(py_tracks, bytes + (stride * i), item);
+		Py_DECREF(item);
+		// Clear the track data
+		ValidTrack tmp;
+		std::swap(tmp, valid_tracks[i]);
+	}
+
+	return (PyObject*) py_tracks;
+#endif
+}
+
+#ifndef USE_PYTHON
+int main(int argc, char** argv)
+{
+	VideoCapture capture;
+	char* video = argv[1];
+	arg_parse(argc, argv);
+	capture.open(video);
+	if (!capture.isOpened()) {
+		fprintf(stderr, "Could not initialize capturing..\n");
+		return -1;
+	}
+	std::vector<Mat> frames;
+	int frame_num = 0;
+	while (frame_num <= end_frame) {
+		Mat frame;
+		// get a new frame
+		capture >> frame;
+		if (frame.empty())
+			break;
+		if (frame_num >= start_frame) {
+			Mat gray;
+			cvtColor(frame, gray, CV_BGR2GRAY);
+			frames.push_back(gray);
+		}
+		frame_num++;
+	}
+	if (frames.empty()) {
+		fprintf(stderr, "Could not initialize capturing..\n");
+		return -1;
+	}
+	size_t rows = frames[0].rows;
+	size_t cols = frames[0].cols;
+	size_t len = frames.size();
+	Ptr<unsigned char> pixels = new unsigned char[rows * cols * len];
+	int idx = 0;
+	for (unsigned int i = 0; i < len; i++) {
+		const Mat& frame = frames[i];
+		int nRows = frame.rows;
+    int nCols = frame.cols;
+    if (frame.isContinuous()) {
+			nCols *= nRows;
+			nRows = 1;
+    }
+    for (int j = 0; j < nRows; j++) {
+			const uchar* p = frame.ptr<uchar>(j);
+			for (int k = 0; k < nCols; k++)
+				pixels[idx++] = p[k];
+    }
+	}
+	densetrack(pixels, len, rows, cols, track_length, min_distance,
+		 patch_size, nxy_cell, nt_cell, scale_num, init_gap, 7, 1.5,
+		 NULL, true);
 	return 0;
 }
+#endif

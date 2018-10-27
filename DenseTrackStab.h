@@ -1,6 +1,10 @@
 #ifndef DENSETRACKSTAB_H_
 #define DENSETRACKSTAB_H_
 
+#ifdef USE_PYTHON
+#include <Python.h>
+#endif
+
 #include <opencv/cv.h>
 #include <opencv/highgui.h>
 #include <opencv/cxcore.h>

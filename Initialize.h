@@ -42,33 +42,18 @@ void InitDescInfo(DescInfo* descInfo, int nBins, bool isHof, int size, int nxy_c
 	descInfo->width = size;
 }
 
-void InitSeqInfo(SeqInfo* seqInfo, char* video)
+void InitSeqInfo(SeqInfo* seqInfo, std::vector<Mat>& video)
 {
-	VideoCapture capture;
-	capture.open(video);
-
-	if(!capture.isOpened())
+	if (video.empty()) {
 		fprintf(stderr, "Could not initialize capturing..\n");
-
-	// get the number of frames in the video
-	int frame_num = 0;
-	while(true) {
-		Mat frame;
-		capture >> frame;
-
-		if(frame.empty())
-			break;
-
-		if(frame_num == 0) {
-			seqInfo->width = frame.cols;
-			seqInfo->height = frame.rows;
-		}
-
-		frame_num++;
-    }
-	seqInfo->length = frame_num;
+		return;
+	}
+	seqInfo->width = video[0].cols;
+	seqInfo->height = video[0].rows;
+	seqInfo->length = video.size();
 }
 
+#ifndef USE_PYTHON
 void usage()
 {
 	fprintf(stderr, "Extract improved trajectories from a video\n\n");
@@ -137,5 +122,6 @@ bool arg_parse(int argc, char** argv)
 	}
 	return flag;
 }
+#endif
 
 #endif /*INITIALIZE_H_*/

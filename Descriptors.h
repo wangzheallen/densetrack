@@ -315,22 +315,34 @@ void DrawTrack(const std::vector<Point2f>& point, const int index, const float s
 	circle(image, point0, 2, Scalar(0,0,255), -1, 8, 0);
 }
 
-void PrintDesc(std::vector<float>& desc, DescInfo& descInfo, TrackInfo& trackInfo)
+void PrintDesc(std::vector<float>& desc, DescInfo& descInfo, TrackInfo& trackInfo
+#ifdef USE_PYTHON
+               , std::vector<float>& outVec
+#endif
+               )
 {
 	int tStride = cvFloor(trackInfo.length/descInfo.ntCells);
 	float norm = 1./float(tStride);
 	int dim = descInfo.dim;
 	int pos = 0;
+#ifdef USE_PYTHON
+	std::vector<float>(descInfo.ntCells * dim).swap(outVec);
+#endif
 	for(int i = 0; i < descInfo.ntCells; i++) {
 		std::vector<float> vec(dim);
 		for(int t = 0; t < tStride; t++)
 			for(int j = 0; j < dim; j++)
 				vec[j] += desc[pos++];
 		for(int j = 0; j < dim; j++)
+#ifdef USE_PYTHON
+			outVec[i * dim + j] = vec[j]*norm;
+#else
 			printf("%.7f\t", vec[j]*norm);
+#endif
 	}
 }
 
+#ifdef USE_SURF
 void LoadBoundBox(char* file, std::vector<Frame>& bb_list)
 {
 	// load the bouding box file
@@ -559,5 +571,6 @@ void MatchFromFlow(const Mat& prev_grey, const Mat& flow, std::vector<Point2f>& 
 		pts.push_back(Point2f(x+f[2*x], y+f[2*x+1]));
 	}
 }
+#endif
 
 #endif /*DESCRIPTORS_H_*/
