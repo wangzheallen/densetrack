@@ -22,6 +22,9 @@ int main(int argc, char** argv)
 		return -1;
 	}
 
+#ifdef USE_SURF
+	bool adjust_camera = true;
+#endif
 	int frame_num = 0;
 	TrackInfo trackInfo;
 	DescInfo hogInfo, hofInfo, mbhInfo;
@@ -34,11 +37,13 @@ int main(int argc, char** argv)
 	SeqInfo seqInfo;
 	InitSeqInfo(&seqInfo, video);
 
+#ifdef USE_SURF
 	std::vector<Frame> bb_list;
-	if(bb_file) {
+	if(adjust_camera && bb_file) {
 		LoadBoundBox(bb_file, bb_list);
 		assert(bb_list.size() == seqInfo.length);
 	}
+#endif
 
 	if(flag)
 		seqInfo.length = end_frame - start_frame + 1;
@@ -48,16 +53,23 @@ int main(int argc, char** argv)
 	if(show_track == 1)
 		namedWindow("DenseTrackStab", 0);
 
-	Ptr<SURF> detector_surf = SURF::create(200);
-	Ptr<SURF> extractor_surf = SURF::create(true, true);
+#ifdef USE_SURF
+	Ptr<SURF> detector_surf;
+	Ptr<SURF> extractor_surf;
+	if (adjust_camera) {
+		detector_surf = SURF::create(200);
+		extractor_surf = SURF::create(true, true);
+	}
+#endif
 
 	std::vector<Point2f> prev_pts_flow, pts_flow;
 	std::vector<Point2f> prev_pts_surf, pts_surf;
 	std::vector<Point2f> prev_pts_all, pts_all;
 
 	std::vector<KeyPoint> prev_kpts_surf, kpts_surf;
-	Mat prev_desc_surf, desc_surf;
-	Mat flow, human_mask;
+#ifdef USE_SURF
+	Mat prev_desc_surf, desc_surf, human_mask;
+#endif
 
 	Mat image, prev_grey, grey;
 
@@ -71,7 +83,6 @@ int main(int argc, char** argv)
 	int init_counter = 0; // indicate when to detect new feature points
 	while(true) {
 		Mat frame;
-		int i, j, c;
 
 		// get a new frame
 		capture >> frame;
@@ -93,11 +104,16 @@ int main(int argc, char** argv)
 			BuildPry(sizes, CV_8UC1, prev_grey_pyr);
 			BuildPry(sizes, CV_8UC1, grey_pyr);
 			BuildPry(sizes, CV_32FC2, flow_pyr);
-			BuildPry(sizes, CV_32FC2, flow_warp_pyr);
 
 			BuildPry(sizes, CV_32FC(5), prev_poly_pyr);
 			BuildPry(sizes, CV_32FC(5), poly_pyr);
-			BuildPry(sizes, CV_32FC(5), poly_warp_pyr);
+
+#ifdef USE_SURF
+			if (adjust_camera) {
+				BuildPry(sizes, CV_32FC2, flow_warp_pyr);
+				BuildPry(sizes, CV_32FC(5), poly_warp_pyr);
+			}
+#endif
 
 			xyScaleTracks.resize(scale_num);
 
@@ -116,19 +132,28 @@ int main(int argc, char** argv)
 
 				// save the feature points
 				std::list<Track>& tracks = xyScaleTracks[iScale];
-				for(i = 0; i < points.size(); i++)
+				for(unsigned int i = 0; i < points.size(); i++) {
 					tracks.push_back(Track(points[i], trackInfo, hogInfo, hofInfo, mbhInfo));
+#ifdef USE_SURF
+					if (adjust_camera)
+						tracks.back().disp.resize(trackInfo.length);
+#endif
+				}
 			}
 
 			// compute polynomial expansion
 			my::FarnebackPolyExpPyr(prev_grey, prev_poly_pyr, fscales, 7, 1.5);
 
-			human_mask = Mat::ones(frame.size(), CV_8UC1);
-			if(bb_file)
-				InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
+#ifdef USE_SURF
+			if (adjust_camera) {
+				human_mask = Mat::ones(frame.size(), CV_8UC1);
+				if(bb_file)
+					InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
 
-			detector_surf->detect(prev_grey, prev_kpts_surf, human_mask);
-			extractor_surf->compute(prev_grey, prev_kpts_surf, prev_desc_surf);
+				detector_surf->detect(prev_grey, prev_kpts_surf, human_mask);
+				extractor_surf->compute(prev_grey, prev_kpts_surf, prev_desc_surf);
+			}
+#endif
 
 			frame_num++;
 			continue;
@@ -138,36 +163,49 @@ int main(int argc, char** argv)
 		frame.copyTo(image);
 		cvtColor(image, grey, CV_BGR2GRAY);
 
-		// match surf features
-		if(bb_file)
-			InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
-		detector_surf->detect(grey, kpts_surf, human_mask);
-		extractor_surf->compute(grey, kpts_surf, desc_surf);
-		ComputeMatch(prev_kpts_surf, kpts_surf, prev_desc_surf, desc_surf, prev_pts_surf, pts_surf);
+#ifdef USE_SURF
+		if (adjust_camera) {
+			// match surf features
+			if(bb_file)
+				InitMaskWithBox(human_mask, bb_list[frame_num].BBs);
+			detector_surf->detect(grey, kpts_surf, human_mask);
+			extractor_surf->compute(grey, kpts_surf, desc_surf);
+			ComputeMatch(prev_kpts_surf, kpts_surf, prev_desc_surf, desc_surf, prev_pts_surf, pts_surf);
+		}
+#endif
 
 		// compute optical flow for all scales once
 		my::FarnebackPolyExpPyr(grey, poly_pyr, fscales, 7, 1.5);
 		my::calcOpticalFlowFarneback(prev_poly_pyr, poly_pyr, flow_pyr, 10, 2);
 
-		MatchFromFlow(prev_grey, flow_pyr[0], prev_pts_flow, pts_flow, human_mask);
-		MergeMatch(prev_pts_flow, pts_flow, prev_pts_surf, pts_surf, prev_pts_all, pts_all);
+#ifdef USE_SURF
+		if (adjust_camera) {
+			MatchFromFlow(prev_grey, flow_pyr[0], prev_pts_flow, pts_flow, human_mask);
+			MergeMatch(prev_pts_flow, pts_flow, prev_pts_surf, pts_surf, prev_pts_all, pts_all);
 
-		Mat H = Mat::eye(3, 3, CV_64FC1);
-		if(pts_all.size() > 50) {
-			std::vector<unsigned char> match_mask;
-			Mat temp = findHomography(prev_pts_all, pts_all, RANSAC, 1, match_mask);
-			if(countNonZero(Mat(match_mask)) > 25)
-				H = temp;
+			Mat H = Mat::eye(3, 3, CV_64FC1);
+			if(pts_all.size() > 50) {
+				std::vector<unsigned char> match_mask;
+				Mat temp = findHomography(prev_pts_all, pts_all, RANSAC, 1, match_mask);
+				if(countNonZero(Mat(match_mask)) > 25)
+					H = temp;
+			}
+
+			Mat H_inv = H.inv();
+			Mat grey_warp = Mat::zeros(grey.size(), CV_8UC1);
+			MyWarpPerspective(prev_grey, grey, grey_warp, H_inv); // warp the second frame
+
+			// compute optical flow for all scales once
+			my::FarnebackPolyExpPyr(grey_warp, poly_warp_pyr, fscales, 7, 1.5);
+			my::calcOpticalFlowFarneback(prev_poly_pyr, poly_warp_pyr, flow_warp_pyr, 10, 2);
 		}
+#endif
 
-		Mat H_inv = H.inv();
-		Mat grey_warp = Mat::zeros(grey.size(), CV_8UC1);
-		MyWarpPerspective(prev_grey, grey, grey_warp, H_inv); // warp the second frame
-
-		// compute optical flow for all scales once
-		my::FarnebackPolyExpPyr(grey_warp, poly_warp_pyr, fscales, 7, 1.5);
-		my::calcOpticalFlowFarneback(prev_poly_pyr, poly_warp_pyr, flow_warp_pyr, 10, 2);
-
+		const std::vector<Mat>& fp =
+#ifdef USE_SURF
+			adjust_camera ? flow_warp_pyr :
+#endif
+			flow_pyr;
 		for(int iScale = 0; iScale < scale_num; iScale++) {
 			if(iScale == 0)
 				grey.copyTo(grey_pyr[0]);
@@ -182,11 +220,11 @@ int main(int argc, char** argv)
 			HogComp(prev_grey_pyr[iScale], hogMat->desc, hogInfo);
 
 			DescMat* hofMat = InitDescMat(height+1, width+1, hofInfo.nBins);
-			HofComp(flow_warp_pyr[iScale], hofMat->desc, hofInfo);
+			HofComp(fp[iScale], hofMat->desc, hofInfo);
 
 			DescMat* mbhMatX = InitDescMat(height+1, width+1, mbhInfo.nBins);
 			DescMat* mbhMatY = InitDescMat(height+1, width+1, mbhInfo.nBins);
-			MbhComp(flow_warp_pyr[iScale], mbhMatX->desc, mbhMatY->desc, mbhInfo);
+			MbhComp(fp[iScale], mbhMatX->desc, mbhMatY->desc, mbhInfo);
 
 			// track feature points in each scale separately
 			std::list<Track>& tracks = xyScaleTracks[iScale];
@@ -205,8 +243,12 @@ int main(int argc, char** argv)
 					continue;
 				}
 
-				iTrack->disp[index].x = flow_warp_pyr[iScale].ptr<float>(y)[2*x];
-				iTrack->disp[index].y = flow_warp_pyr[iScale].ptr<float>(y)[2*x+1];
+#ifdef USE_SURF
+				if (adjust_camera) {
+					iTrack->disp[index].x = flow_warp_pyr[iScale].ptr<float>(y)[2*x];
+					iTrack->disp[index].y = flow_warp_pyr[iScale].ptr<float>(y)[2*x+1];
+				}
+#endif
 
 				// get the descriptors for the feature point
 				RectInfo rect;
@@ -227,12 +269,21 @@ int main(int argc, char** argv)
 					for(int i = 0; i <= trackInfo.length; ++i)
 						trajectory[i] = iTrack->point[i]*fscales[iScale];
 				
-					std::vector<Point2f> displacement(trackInfo.length);
-					for (int i = 0; i < trackInfo.length; ++i)
-						displacement[i] = iTrack->disp[i]*fscales[iScale];
+#ifdef USE_SURF
+					std::vector<Point2f> displacement;
+					if (adjust_camera) {
+						displacement.resize(trackInfo.length);
+						for (int i = 0; i < trackInfo.length; ++i)
+							displacement[i] = iTrack->disp[i]*fscales[iScale];
+					}
+#endif
 	
 					float mean_x(0), mean_y(0), var_x(0), var_y(0), length(0);
-					if(IsValid(trajectory, mean_x, mean_y, var_x, var_y, length) && IsCameraMotion(displacement)) {
+					if(IsValid(trajectory, mean_x, mean_y, var_x, var_y, length)
+#ifdef USE_SURF
+						 && (!adjust_camera || IsCameraMotion(displacement))
+#endif
+						 ) {
 						// output the trajectory
 						printf("%d\t%f\t%f\t%f\t%f\t%f\t%f\t", frame_num, mean_x, mean_y, var_x, var_y, length, fscales[iScale]);
 
@@ -241,9 +292,13 @@ int main(int argc, char** argv)
 						printf("%f\t", std::min<float>(std::max<float>(mean_y/float(seqInfo.height), 0), 0.999));
 						printf("%f\t", std::min<float>(std::max<float>((frame_num - trackInfo.length/2.0 - start_frame)/float(seqInfo.length), 0), 0.999));
 					
-						// output the trajectory
-						for (int i = 0; i < trackInfo.length; ++i)
-							printf("%f\t%f\t", displacement[i].x, displacement[i].y);
+#ifdef USE_SURF
+						if (adjust_camera) {
+							// output the trajectory
+							for (int i = 0; i < trackInfo.length; ++i)
+								printf("%f\t%f\t", displacement[i].x, displacement[i].y);
+						}
+#endif
 		
 						PrintDesc(iTrack->hog, hogInfo, trackInfo);
 						PrintDesc(iTrack->hof, hofInfo, trackInfo);
@@ -272,25 +327,29 @@ int main(int argc, char** argv)
 
 			DenseSample(grey_pyr[iScale], points, quality, min_distance);
 			// save the new feature points
-			for(i = 0; i < points.size(); i++)
+			for(unsigned int i = 0; i < points.size(); i++)
 				tracks.push_back(Track(points[i], trackInfo, hogInfo, hofInfo, mbhInfo));
 		}
 
 		init_counter = 0;
 		grey.copyTo(prev_grey);
-		for(i = 0; i < scale_num; i++) {
+		for(int i = 0; i < scale_num; i++) {
 			grey_pyr[i].copyTo(prev_grey_pyr[i]);
 			poly_pyr[i].copyTo(prev_poly_pyr[i]);
 		}
 
-		prev_kpts_surf = kpts_surf;
-		desc_surf.copyTo(prev_desc_surf);
+#ifdef USE_SURF
+		if (adjust_camera) {
+			prev_kpts_surf = kpts_surf;
+			desc_surf.copyTo(prev_desc_surf);
+		}
+#endif
 
 		frame_num++;
 
 		if( show_track == 1 ) {
 			imshow( "DenseTrackStab", image);
-			c = cvWaitKey(3);
+			int c = cvWaitKey(3);
 			if((char)c == 27) break;
 		}
 	}

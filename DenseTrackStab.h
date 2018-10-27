@@ -90,7 +90,9 @@ class Track
 {
 public:
     std::vector<Point2f> point;
+#ifdef USE_SURF
     std::vector<Point2f> disp;
+#endif
     std::vector<float> hog;
     std::vector<float> hof;
     std::vector<float> mbhX;
@@ -99,7 +101,7 @@ public:
 
     Track(const Point2f& point_, const TrackInfo& trackInfo, const DescInfo& hogInfo,
           const DescInfo& hofInfo, const DescInfo& mbhInfo)
-        : point(trackInfo.length+1), disp(trackInfo.length), hog(hogInfo.dim*trackInfo.length),
+        : point(trackInfo.length+1), hog(hogInfo.dim*trackInfo.length),
           hof(hofInfo.dim*trackInfo.length), mbhX(mbhInfo.dim*trackInfo.length), mbhY(mbhInfo.dim*trackInfo.length)
     {
         index = 0;

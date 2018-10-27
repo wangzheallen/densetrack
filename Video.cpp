@@ -36,7 +36,6 @@ int main( int argc, char** argv )
 
 	while( true ) {
 		IplImage* frame = 0;
-		int i, j, c;
 
 		// get a new frame
 		frame = cvQueryFrame( capture );
@@ -52,7 +51,7 @@ int main( int argc, char** argv )
 
 		if( show == 1 ) {
 			cvShowImage( "Video", image);
-			c = cvWaitKey(3);
+			int c = cvWaitKey(3);
 			if((char)c == 27) break;
 		}
 		
