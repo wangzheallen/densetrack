@@ -6,6 +6,7 @@
 #include <time.h>
 
 #ifdef USE_PYTHON
+#include <Python.h>
 #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 #include <numpy/arrayobject.h>
 #endif
@@ -92,20 +93,6 @@ namespace {
 		}
 	};
 
-	class GILState {
-		PyGILState_STATE gstate;
-	public:
-		GILState() {
-			// See http://stackoverflow.com/questions/35774011/segment-fault-when-creating-pylist-new-in-python-c-extention
-			// for why we need line of code below
-			// Note that this is only needed for ctypes.CDLL and not for ctypes.PyDLL but does no harm for the latter.
-			gstate = PyGILState_Ensure();
-		}
-		~GILState() {
-			PyGILState_Release(gstate);
-		}
-	};
-
 	int createDirectory(const char* path) {
 		const char* end = strrchr(path, '/');
 		if (end == NULL || end == path)
@@ -133,22 +120,17 @@ namespace {
 }
 #endif
 
-extern "C"
+static
 #ifdef USE_PYTHON
 PyObject*
 #else
 void
 #endif
-densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int track_length, 
+densetrack(const std::vector<Mat>& video, int track_length, 
 		int min_distance, int patch_size, int nxy_cell, int nt_cell, 
 		int scale_num, int init_gap, int poly_n, double poly_sigma,
 		const char* image_pattern, bool adjust_camera) {
 #ifdef USE_PYTHON
-	GILState gstate;
-	if (PyArray_API == NULL) {
-		import_array();
-	}
-
 	std::vector<ValidTrack> valid_tracks;
 
 	// Note that this opens a block closed by Py_END_ALLOW_THREADS.
@@ -156,14 +138,6 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 	// Variables may need to be declared outside that block.
 	Py_BEGIN_ALLOW_THREADS
 #endif
-
-	// create a vector of cv::mat to hold frames of video
-	std::vector<Mat> video;
-	video.reserve(len);
-	for (size_t k = 0; k < len; k++) {
-		Mat frame = Mat(rows, cols, CV_8UC1, (frames + k*rows*cols));
-		video.push_back(frame);
-	}
 
 	TrackInfo trackInfo;
 	DescInfo hogInfo, hofInfo, mbhInfo;
@@ -530,7 +504,7 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 			catch (const cv::Exception& ex) {
 				Py_BLOCK_THREADS
 				PyErr_SetString(PyExc_RuntimeError, ex.what());
-				Py_RETURN_NONE;
+				return NULL;
 			}
 		}
 #endif
@@ -578,7 +552,7 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 		(PyArrayObject*) PyArray_NewFromDescr(&PyArray_Type, descr, 1, dims, NULL, NULL, 0, NULL);
 	if (!py_tracks) {
 		fprintf(stderr, "Error creating Numpy array\n");
-		Py_RETURN_NONE;
+		return NULL;
 	}
 
 	npy_intp stride = PyArray_STRIDES(py_tracks)[0];
@@ -595,6 +569,99 @@ densetrack(unsigned char *frames, size_t len, size_t rows, size_t cols, int trac
 	return (PyObject*) py_tracks;
 #endif
 }
+
+#ifdef USE_PYTHON
+static PyObject*
+densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
+	static const char* arg_names[] = {
+		"video", "track_length", "min_distance", "patch_size", "nxy_cell",
+		"nt_cell", "scale_num", "init_gap", "poly_n", "poly_sigma",
+		"image_pattern", "adjust_camera", NULL};
+	PyObject* video;
+	int track_length = 15;
+	int min_distance = 5;
+	int patch_size = 32;
+	int nxy_cell = 2;
+	int nt_cell = 3;
+	int scale_num = 8;
+	int init_gap = 1;
+	int poly_n = 7;
+	int poly_sigma = 1.5;
+	const char* image_pattern = NULL;
+	int adjust_camera = 0;
+	if (!PyArg_ParseTupleAndKeywords
+			(args, kwds, "O|iiiiiiiifsp", (char**)arg_names,
+			&video, &track_length, &min_distance, &patch_size, &nxy_cell, &nt_cell,
+			&scale_num, &init_gap, &poly_n, &poly_sigma, &image_pattern,
+			&adjust_camera))
+		return NULL;
+	// NPY_ARRAY_IN_ARRAY = NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED
+	PyObject* arr = PyArray_FROM_OTF(video, NPY_UBYTE, NPY_ARRAY_IN_ARRAY);
+	if (arr == NULL) {
+		Py_DECREF(video);
+		return NULL;
+	}
+	if (PyArray_NDIM((PyArrayObject*)arr) != 3) {
+		PyErr_SetString(PyExc_ValueError, 
+			"'video' has to have 3 dimensions (frames, height, width)");
+		Py_DECREF(arr);
+		Py_DECREF(video);
+		return NULL;
+	}
+	unsigned char* data = (unsigned char*)PyArray_DATA((PyArrayObject*)arr);
+	npy_intp len = PyArray_DIM((PyArrayObject*)arr, 0);
+	npy_intp rows = PyArray_DIM((PyArrayObject*)arr, 1);
+	npy_intp cols = PyArray_DIM((PyArrayObject*)arr, 2);
+	if (std::min(rows, cols) < patch_size * sqrt(2)) {
+		PyErr_SetString(PyExc_ValueError,
+			"min dimension has to be at least patch_size*sqrt(2)");
+		Py_DECREF(arr);
+		Py_DECREF(video);
+		return NULL;
+	}
+	std::vector<Mat> frames;
+	frames.reserve(len);
+	for (int i = 0; i < len; i++) {
+		Mat frame = Mat(rows, cols, CV_8UC1, (data + i*rows*cols));
+		frames.push_back(frame);
+	}
+	PyObject* result = densetrack(frames, track_length, min_distance, patch_size, nxy_cell,
+		nt_cell, scale_num, init_gap, poly_n, poly_sigma,
+		image_pattern, adjust_camera);
+	Py_DECREF(arr);
+	Py_DECREF(video);
+	return result;
+}
+
+static PyMethodDef DenseTrackMethods[] = {
+	{"densetrack", (PyCFunction)densetrack_densetrack, METH_VARARGS | METH_KEYWORDS,
+	 "Computes dense trajectories for a video."},
+	{NULL, NULL, 0, NULL}
+};
+
+static struct PyModuleDef densetrackmodule = {
+	PyModuleDef_HEAD_INIT,
+	"densetrack",
+	NULL,
+	-1,
+	DenseTrackMethods
+};
+
+static PyObject* DenseTrackError;
+
+PyMODINIT_FUNC
+PyInit_densetrack(void)
+{
+	PyObject* m = PyModule_Create(&densetrackmodule);
+	if (m == NULL)
+		return NULL;
+	DenseTrackError = PyErr_NewException("densetrack.error", NULL, NULL);
+	Py_INCREF(DenseTrackError);
+	PyModule_AddObject(m, "error", DenseTrackError);
+	import_array();
+	return m;
+}
+#endif
 
 #ifndef USE_PYTHON
 int main(int argc, char** argv)
@@ -624,26 +691,7 @@ int main(int argc, char** argv)
 		fprintf(stderr, "Could not initialize capturing..\n");
 		return -1;
 	}
-	size_t rows = frames[0].rows;
-	size_t cols = frames[0].cols;
-	size_t len = frames.size();
-	Ptr<unsigned char> pixels = new unsigned char[rows * cols * len];
-	int idx = 0;
-	for (unsigned int i = 0; i < len; i++) {
-		const Mat& frame = frames[i];
-		int nRows = frame.rows;
-    int nCols = frame.cols;
-    if (frame.isContinuous()) {
-			nCols *= nRows;
-			nRows = 1;
-    }
-    for (int j = 0; j < nRows; j++) {
-			const uchar* p = frame.ptr<uchar>(j);
-			for (int k = 0; k < nCols; k++)
-				pixels[idx++] = p[k];
-    }
-	}
-	densetrack(pixels, len, rows, cols, track_length, min_distance,
+	densetrack(frames, track_length, min_distance,
 		 patch_size, nxy_cell, nt_cell, scale_num, init_gap, 7, 1.5,
 		 NULL, true);
 	return 0;

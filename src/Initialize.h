@@ -42,7 +42,7 @@ void InitDescInfo(DescInfo* descInfo, int nBins, bool isHof, int size, int nxy_c
 	descInfo->width = size;
 }
 
-void InitSeqInfo(SeqInfo* seqInfo, std::vector<Mat>& video)
+void InitSeqInfo(SeqInfo* seqInfo, const std::vector<Mat>& video)
 {
 	if (video.empty()) {
 		fprintf(stderr, "Could not initialize capturing..\n");

@@ -8,7 +8,7 @@ USE_SURF = true
 #USE_GPROF = true
 
 # If USE_PYTHON is true, a library using the Python C API is built.
-USE_PYTHON = true
+#USE_PYTHON = true
 
 # The directory containing the Python include directory.
 PREFIX=${HOME}/py-virt
@@ -33,9 +33,7 @@ BINDIR := $(BUILD)
 
 # libraries 
 LDLIBS = $(addprefix -l, $(LIBS) $(LIBS_$(notdir $*)))
-LIBS := \
-	opencv_videoio opencv_calib3d opencv_features2d opencv_highgui opencv_imgproc opencv_imgcodecs opencv_core \
-	avformat avdevice avutil avcodec swscale
+LIBS := opencv_videoio opencv_calib3d opencv_features2d opencv_highgui opencv_imgproc opencv_imgcodecs opencv_core
 ifeq ($(USE_SURF),true)
 LIBS += opencv_xfeatures2d
 endif
