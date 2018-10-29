@@ -78,7 +78,8 @@ namespace {
 
 	private:
 		PyObject* toPython(const std::vector<float>& values) {
-			// This could be sped up more by creating a Numpy array here.
+			// Creating a Numpy array here provides no noticeable speedup and the
+			// code would be longer.
 			PyObject* py_list = PyList_New(values.size());
 			for (size_t i = 0; i < values.size(); i++)
 				PyList_SetItem(py_list, i, Py_BuildValue("f", values[i]));
@@ -555,7 +556,7 @@ densetrack(const std::vector<Mat>& video, int track_length,
 		return NULL;
 	}
 
-	npy_intp stride = PyArray_STRIDES(py_tracks)[0];
+	npy_intp stride = PyArray_STRIDE(py_tracks, 0);
 	char* bytes = PyArray_BYTES(py_tracks);
 	for (size_t i = 0; i < valid_tracks.size(); i++) {
 		PyObject* item = valid_tracks[i].toPython();
@@ -589,6 +590,8 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 	int poly_sigma = 1.5;
 	const char* image_pattern = NULL;
 	int adjust_camera = 0;
+	// https://docs.python.org/3.5/c-api/arg.html#other-objects
+	// The object's reference count is not increased.
 	if (!PyArg_ParseTupleAndKeywords
 			(args, kwds, "O|iiiiiiiifsp", (char**)arg_names,
 			&video, &track_length, &min_distance, &patch_size, &nxy_cell, &nt_cell,
@@ -597,15 +600,12 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 		return NULL;
 	// NPY_ARRAY_IN_ARRAY = NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED
 	PyObject* arr = PyArray_FROM_OTF(video, NPY_UBYTE, NPY_ARRAY_IN_ARRAY);
-	if (arr == NULL) {
-		Py_DECREF(video);
+	if (arr == NULL)
 		return NULL;
-	}
 	if (PyArray_NDIM((PyArrayObject*)arr) != 3) {
 		PyErr_SetString(PyExc_ValueError, 
 			"'video' has to have 3 dimensions (frames, height, width)");
 		Py_DECREF(arr);
-		Py_DECREF(video);
 		return NULL;
 	}
 	unsigned char* data = (unsigned char*)PyArray_DATA((PyArrayObject*)arr);
@@ -616,7 +616,6 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 		PyErr_SetString(PyExc_ValueError,
 			"min dimension has to be at least patch_size*sqrt(2)");
 		Py_DECREF(arr);
-		Py_DECREF(video);
 		return NULL;
 	}
 	std::vector<Mat> frames;
@@ -629,7 +628,6 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 		nt_cell, scale_num, init_gap, poly_n, poly_sigma,
 		image_pattern, adjust_camera);
 	Py_DECREF(arr);
-	Py_DECREF(video);
 	return result;
 }
 
