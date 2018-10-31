@@ -1,24 +1,32 @@
 #!/usr/bin/env python
 
 import os
+import sys
 from setuptools.command.build_ext import build_ext
 from distutils.core import setup, Extension
+# Putting numpy in setup_requires didn't have the desired effect.
+try:
+    import numpy
+except ModuleNotFoundError:
+    print('First run "pip install numpy"')
+    sys.exit(1)
 
 USE_SURF = True
 
+print('If there are OpenCV errors, run "conda install -c conda-forge opencv" or ')
+print('install OpenCV by other means.')
+print()
 
 class CustomBuildExt(build_ext):
     def build_extensions(self):
         # Avoid a gcc warning: https://stackoverflow.com/a/49041815
         # cc1plus: warning: command line option ‘-Wstrict-prototypes’ is valid
         # for C/ObjC but not for C++
-        self.compiler.compiler_so.remove('-Wstrict-prototypes')
+        try:
+            self.compiler.compiler_so.remove('-Wstrict-prototypes')
+        except ValueError:
+            pass
         super(CustomBuildExt, self).build_extensions()
-    def run(self):
-        # import numpy after install_requires
-        import numpy
-        self.include_dirs.append(numpy.get_include())
-        build_ext.run(self)
 
 
 try:
@@ -27,6 +35,7 @@ try:
 except KeyError:
     include_dirs = []
     library_dirs = []
+include_dirs.append(numpy.get_include())
 
 extra_compile_args = ['-O3']
 macros = [('USE_PYTHON', None)]
@@ -45,7 +54,6 @@ densetrack = Extension('densetrack', ['src/DenseTrackStab.cpp'],
 setup(name='densetrack',
       version='1.0',
       cmdclass={'build_ext': CustomBuildExt},
-      install_requires=['numpy'],
       ext_modules=[densetrack],
       url='https://github.com/FXPAL/densetrack',
       author='Andreas Girgensohn',
