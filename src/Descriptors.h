@@ -23,47 +23,48 @@ void BuildDescMat(const Mat& xComp, const Mat& yComp, float* desc, const DescInf
 {
 	float maxAngle = 360.f;
 	int nDims = descInfo.nBins;
+	bool isHof = descInfo.isHof;
 	// one more bin for hof
-	int nBins = descInfo.isHof ? descInfo.nBins-1 : descInfo.nBins;
+	int nBins = isHof ? descInfo.nBins-1 : descInfo.nBins;
 	const float angleBase = float(nBins)/maxAngle;
 
 	int step = (xComp.cols+1)*nDims;
 	int index = step + nDims;
+	std::vector<float> angles(xComp.cols);
+	std::vector<float> sum(nDims);
 	for(int i = 0; i < xComp.rows; i++, index += nDims) {
 		const float* xc = xComp.ptr<float>(i);
 		const float* yc = yComp.ptr<float>(i);
 
+		// Using cv::hal::magnitude32f is slower than calling sqrt in the loop,
+		// probably because the instruction "sqrtss" is used.
+		cv::hal::fastAtan32f(yc, xc, &angles[0], xComp.cols, true);
 		// summarization of the current line
-		std::vector<float> sum(nDims);
+		std::fill(sum.begin(), sum.end(), 0);
 		for(int j = 0; j < xComp.cols; j++) {
 			float x = xc[j];
 			float y = yc[j];
 			float mag0 = sqrt(x*x + y*y);
-			float mag1;
-			int bin0, bin1;
 
 			// for the zero bin of hof
-			if(descInfo.isHof && mag0 <= min_flow) {
-				bin0 = nBins; // the zero bin is the last one
-				mag0 = 1.0;
-				bin1 = 0;
-				mag1 = 0;
+			if(isHof && mag0 <= min_flow) {
+				sum[nBins]++; // the zero bin is the last one
 			}
 			else {
-				float angle = fastAtan2(y, x);
+				float angle = angles[j];
 				if(angle >= maxAngle) angle -= maxAngle;
 
 				// split the mag to two adjacent bins
 				float fbin = angle * angleBase;
-				bin0 = cvFloor(fbin);
-				bin1 = (bin0+1)%nBins;
+				int bin0 = cvFloor(fbin);
+				int bin1 = (bin0+1)%nBins;
 
-				mag1 = (fbin - bin0)*mag0;
+				float mag1 = (fbin - bin0)*mag0;
 				mag0 -= mag1;
-			}
 
-			sum[bin0] += mag0;
-			sum[bin1] += mag1;
+				sum[bin0] += mag0;
+				sum[bin1] += mag1;
+			}
 
 			for(int m = 0; m < nDims; m++, index++)
 				desc[index] = desc[index-step] + sum[m];
@@ -95,6 +96,10 @@ void GetDesc(const DescMat* descMat, RectInfo& rect, DescInfo descInfo, std::vec
 		const float* bottom_right = bottom_left + xStep;
 
 		for(int i = 0; i < nBins; i++) {
+			// With -O3, it is actually a little worse to increment all four
+			// pointers in this loop (four "leaq" instructions). Both the
+			// vector access and std::max is inlined so that there isn't any
+			// advantage to use pointers or a conditional expression.
 			float sum = bottom_right[i] + top_left[i] - bottom_left[i] - top_right[i];
 			vec[iDesc++] = std::max<float>(sum, 0) + epsilon;
 		}
