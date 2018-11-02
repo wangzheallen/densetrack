@@ -631,6 +631,8 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 		Mat frame = Mat(rows, cols, CV_8UC1, (data + i*rows*cols));
 		frames.push_back(frame);
 	}
+	// Parallel OpenCV isn't faster here but uses more CPU.
+	setNumThreads(0);
 	PyObject* result = densetrack(frames, track_length, min_distance, patch_size, nxy_cell,
 		nt_cell, scale_num, init_gap, poly_n, poly_sigma,
 		image_pattern, adjust_camera, scale_stride);
