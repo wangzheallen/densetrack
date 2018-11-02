@@ -29,7 +29,6 @@ using namespace cv;
 int start_frame = 0;
 int end_frame = INT_MAX;
 int scale_num = 8;
-const float scale_stride = sqrt(2);
 char* bb_file = NULL;
 
 // parameters for descriptors

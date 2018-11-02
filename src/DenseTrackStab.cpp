@@ -130,7 +130,7 @@ void
 densetrack(const std::vector<Mat>& video, int track_length, 
 		int min_distance, int patch_size, int nxy_cell, int nt_cell, 
 		int scale_num, int init_gap, int poly_n, double poly_sigma,
-		const char* image_pattern, bool adjust_camera) {
+		const char* image_pattern, bool adjust_camera, float scale_stride) {
 #ifdef USE_PYTHON
 	std::vector<ValidTrack> valid_tracks;
 
@@ -204,9 +204,13 @@ densetrack(const std::vector<Mat>& video, int track_length,
 			grey.create(frame.size(), CV_8UC1);
 			prev_grey.create(frame.size(), CV_8UC1);
 
-			InitPry(frame, fscales, sizes);
+			InitPry(frame, fscales, sizes, patch_size, scale_stride, scale_num);
+			// for (size_t i = 0; i < fscales.size(); i++)
+			// 	fprintf(stderr, "scale %lu: %.3f %d x %d\n", i, fscales[i], sizes[i].width, sizes[i].height);
 
 			BuildPry(sizes, CV_8UC1, prev_grey_pyr);
+			// for (size_t i = 0; i < prev_grey_pyr.size(); i++)
+			// 	fprintf(stderr, "prev_grey %lu: %d x %d\n", i, prev_grey_pyr[i].cols, prev_grey_pyr[i].rows);
 			BuildPry(sizes, CV_8UC1, grey_pyr);
 			BuildPry(sizes, CV_32FC2, flow_pyr);
 
@@ -229,8 +233,10 @@ densetrack(const std::vector<Mat>& video, int track_length,
 			for(int iScale = 0; iScale < scale_num; iScale++) {
 				if(iScale == 0)
 					prev_grey.copyTo(prev_grey_pyr[0]);
-				else
+				else {
+					// fprintf(stderr, "resize %d: %d x %d -> %d x %d\n", iScale, prev_grey_pyr[iScale-1].size().width, prev_grey_pyr[iScale-1].size().height, prev_grey_pyr[iScale].size().width, prev_grey_pyr[iScale].size().height);
 					resize(prev_grey_pyr[iScale-1], prev_grey_pyr[iScale], prev_grey_pyr[iScale].size(), 0, 0, INTER_LINEAR);
+				}
 
 				// dense sampling feature points
 				std::vector<Point2f> points(0);
@@ -282,7 +288,7 @@ densetrack(const std::vector<Mat>& video, int track_length,
 
 		// compute optical flow for all scales once
 		my::FarnebackPolyExpPyr(grey, poly_pyr, fscales, poly_n, poly_sigma);
-		my::calcOpticalFlowFarneback(prev_poly_pyr, poly_pyr, flow_pyr, 10, 2);
+		my::calcOpticalFlowFarneback(prev_poly_pyr, poly_pyr, flow_pyr, 10, 2, scale_stride);
 
 #ifdef USE_SURF
 		if (adjust_camera) {
@@ -303,7 +309,7 @@ densetrack(const std::vector<Mat>& video, int track_length,
 
 			// compute optical flow for all scales once
 			my::FarnebackPolyExpPyr(grey_warp, poly_warp_pyr, fscales, poly_n, poly_sigma);
-			my::calcOpticalFlowFarneback(prev_poly_pyr, poly_warp_pyr, flow_warp_pyr, 10, 2);
+			my::calcOpticalFlowFarneback(prev_poly_pyr, poly_warp_pyr, flow_warp_pyr, 10, 2, scale_stride);
 		}
 #endif
 
@@ -577,7 +583,7 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 	static const char* arg_names[] = {
 		"video", "track_length", "min_distance", "patch_size", "nxy_cell",
 		"nt_cell", "scale_num", "init_gap", "poly_n", "poly_sigma",
-		"image_pattern", "adjust_camera", NULL};
+		"image_pattern", "adjust_camera", "scale_stride", NULL};
 	PyObject* video;
 	int track_length = 15;
 	int min_distance = 5;
@@ -590,13 +596,14 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 	int poly_sigma = 1.5;
 	const char* image_pattern = NULL;
 	int adjust_camera = 0;
+	float scale_stride = sqrt(2);
 	// https://docs.python.org/3.5/c-api/arg.html#other-objects
 	// The object's reference count is not increased.
 	if (!PyArg_ParseTupleAndKeywords
-			(args, kwds, "O|iiiiiiiifsp", (char**)arg_names,
+			(args, kwds, "O|iiiiiiiifspf", (char**)arg_names,
 			&video, &track_length, &min_distance, &patch_size, &nxy_cell, &nt_cell,
 			&scale_num, &init_gap, &poly_n, &poly_sigma, &image_pattern,
-			&adjust_camera))
+			&adjust_camera, &scale_stride))
 		return NULL;
 	// NPY_ARRAY_IN_ARRAY = NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED
 	PyObject* arr = PyArray_FROM_OTF(video, NPY_UBYTE, NPY_ARRAY_IN_ARRAY);
@@ -626,7 +633,7 @@ densetrack_densetrack(PyObject* self, PyObject* args, PyObject* kwds) {
 	}
 	PyObject* result = densetrack(frames, track_length, min_distance, patch_size, nxy_cell,
 		nt_cell, scale_num, init_gap, poly_n, poly_sigma,
-		image_pattern, adjust_camera);
+		image_pattern, adjust_camera, scale_stride);
 	Py_DECREF(arr);
 	return result;
 }
@@ -691,7 +698,7 @@ int main(int argc, char** argv)
 	}
 	densetrack(frames, track_length, min_distance,
 		 patch_size, nxy_cell, nt_cell, scale_num, init_gap, 7, 1.5,
-		 NULL, true);
+		 NULL, true, sqrt(2));
 	return 0;
 }
 #endif

@@ -269,7 +269,7 @@ void DenseSample(const Mat& grey, std::vector<Point2f>& points, const double qua
 	}
 }
 
-void InitPry(const Mat& frame, std::vector<float>& scales, std::vector<Size>& sizes)
+void InitPry(const Mat& frame, std::vector<float>& scales, std::vector<Size>& sizes, int patch_size, float scale_stride, int& scale_num)
 {
 	int rows = frame.rows, cols = frame.cols;
 	float min_size = std::min<int>(rows, cols);
